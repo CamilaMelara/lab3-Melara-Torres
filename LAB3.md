@@ -165,19 +165,27 @@ Documente:
 
 | Elemento | Valor |
 |---|---|
-| Expresión PromQL | |
-| Umbral | |
-| Intervalo de evaluación | |
-| Período pendiente | |
-| `Keep firing for` | |
+| Expresión PromQL | `(sum(rate(notifications_http_requests_total{route="/notifications",status_code=~"5.."}[1m])) or vector(0)) / sum(rate(notifications_http_requests_total{route="/notifications"}[1m]))` |
+| Umbral | `> 0.1` (más del 10 % de respuestas 5xx) |
+| Intervalo de evaluación | 10 s |
+| Período pendiente | 30 s |
+| `Keep firing for` | 30 s |
 
-Justifique por qué la condición seleccionada representa un síntoma relevante del servicio y por qué los parámetros temporales son apropiados para este experimento.
+Regla: `notifications-api: proporción de 5xx alta`, carpeta `lab3`, grupo de evaluación `lab3-eval`. Estado sin datos configurado como Normal.
+
+**Justificación.** La señal es la proporción de respuestas 5xx de `POST /notifications`, un síntoma directo de disponibilidad percibido por el cliente. Permite distinguir la fase C (timeouts que terminan en 504) de la fase D, donde la duración aumenta pero no hay respuestas 5xx; una alerta basada en duración no permitiría esa distinción. El `or vector(0)` hace que la expresión valga 0 cuando hay tráfico sin errores; sin tráfico sigue sin datos y la regla queda en Normal.
+
+- **Umbral 0.1:** en A, B, D y E la proporción es 0; en C es ~0.25 (1 de cada 4 solicitudes). Un 10 % queda claramente por encima del comportamiento normal y por debajo del nivel de C, con margen para el ascenso gradual que produce la ventana de 1 min al inicio de la fase.
+- **Intervalo de evaluación 10 s:** suficientemente fino para una fase de 90 s. Es distinto de la ventana `[1m]` de la expresión: el intervalo define cada cuánto se evalúa la regla; la ventana define cuántos datos promedia cada evaluación.
+- **Período pendiente 30 s:** la condición debe cumplirse en ~3 evaluaciones consecutivas antes de pasar a Alerting, para que un 5xx aislado no dispare la alerta. En la ejecución, la fase C empezó a las 00:09:36 y la instancia pasó a Alerting a las 00:10:40: ~35 s para que la proporción en la ventana de 1 min superara 0.1, más los 30 s pendientes.
+- **Keep firing for 30 s:** cuando la condición deja de cumplirse (al pasar a D), la alerta se mantiene 30 s más en Alerting. Evita que oscile entre Alerting y Normal si la proporción ronda el umbral; el costo es que la recuperación se refleja unos segundos más tarde.
+
 
 Ejecute el escenario A-E y conserve **una captura** donde la regla se encuentre en estado `Alerting` durante la fase C:
 
-```text
-evidence/alert.png
-```
+**Evidencia:** la regla en estado Alerting (Firing) durante la fase C, creada a las 00:10:40.
+
+![Alerta en estado Alerting durante la fase C](evidence/alert.png)
 
 La captura debe quedar referenciada en este documento como evidencia del estado alcanzado por la regla.
 
@@ -246,6 +254,61 @@ Reconstruya los eventos observados en ambos servicios y separe explícitamente:
 - evidencia observada;
 - interpretación;
 - hipótesis que requeriría evidencia adicional.
+**Localización de la solicitud.** En el dashboard, la fase C (inicio aprox. 00:09:36 del 2026-11-01) muestra aumento de la proporción de 5xx y del p95. Para encontrar una operación concreta se filtraron los eventos de fallo final en notifications-api:
+
+```bash
+jq -c 'select(.event == "notification.failed") | {time, request_id, notification_id, status_code, result, duration_ms}' logs/notifications-api.jsonl | head -5
+```
+
+```json
+{"time":1793513377579,"request_id":"req-c-0004","notification_id":"not-c-0004","status_code":504,"result":"timeout","duration_ms":711}
+{"time":1793513378578,"request_id":"req-c-0008","notification_id":"not-c-0008","status_code":504,"result":"timeout","duration_ms":709}
+{"time":1793513379577,"request_id":"req-c-0012","notification_id":"not-c-0012","status_code":504,"result":"timeout","duration_ms":708}
+{"time":1793513380579,"request_id":"req-c-0016","notification_id":"not-c-0016","status_code":504,"result":"timeout","duration_ms":710}
+```
+
+En total se registraron 90 eventos `notification.failed` (todos 504 / `timeout`) y 90 eventos `delivery.timeout` en el proveedor. Se seleccionó `request_id = req-c-0004` y se reconstruyó en ambos servicios:
+
+```bash
+RID="req-c-0004"
+jq -c --arg r "$RID" 'select(.request_id == $r) | {time, level, event, attempt, status_code, dependency_status, result, duration_ms}' \
+  logs/notifications-api.jsonl logs/delivery-provider.jsonl | jq -s -c 'sort_by(.time)[]'
+```
+
+```json
+{"time":1793513376868,"level":30,"event":"notification.received","attempt":null,"status_code":null,"dependency_status":null,"result":null,"duration_ms":null}
+{"time":1793513376868,"level":30,"event":"delivery.attempt.started","attempt":1,"status_code":null,"dependency_status":null,"result":null,"duration_ms":null}
+{"time":1793513376871,"level":30,"event":"delivery.received","attempt":1,"status_code":null,"dependency_status":null,"result":null,"duration_ms":null}
+{"time":1793513377576,"level":50,"event":"delivery.timeout","attempt":1,"status_code":504,"dependency_status":null,"result":"timeout","duration_ms":704}
+{"time":1793513377579,"level":50,"event":"notification.failed","attempt":1,"status_code":504,"dependency_status":504,"result":"timeout","duration_ms":711}
+```
+
+**Secuencia temporal** (t = 0 a las 00:09:36.868; niveles Pino: 30 = INFO, 50 = ERROR):
+
+| t (ms) | Servicio | Evento | Nivel |
+|---|---|---|---|
+| 0 | notifications-api | `notification.received` (`not-c-0004`) | INFO |
+| 0 | notifications-api | `delivery.attempt.started`, attempt 1 | INFO |
+| 3 | delivery-provider | `delivery.received`, attempt 1 | INFO |
+| 708 | delivery-provider | `delivery.timeout`, 504, duration_ms 704 | ERROR |
+| 711 | notifications-api | `notification.failed`, 504, result `timeout`, duration_ms 711 | ERROR |
+
+**Evidencia** (hechos presentes en logs y métricas):
+- Ambos servicios registran el mismo `request_id` `req-c-0004` para `not-c-0004`.
+- delivery-provider recibió la solicitud 3 ms después del inicio y respondió 504 tras 704 ms (`delivery.timeout`).
+- 3 ms después, notifications-api registró `notification.failed` con `dependency_status` 504, `status_code` 504 y duración total de 711 ms, en el intento 1.
+- No hay segundo intento: no aparece otro `delivery.attempt.started`.
+- En el mismo intervalo, el dashboard muestra la proporción de 5xx por encima de 0 y la serie `timeout` de delivery-provider, y la alerta pasó a Alerting.
+
+**Interpretación** (significado según el conocimiento del sistema):
+- La solicitud falló porque la dependencia agotó su tiempo; el 504 del cliente es la propagación del 504 del proveedor.
+- Casi toda la duración (704 de 711 ms) ocurrió dentro de delivery-provider; el procesamiento propio de notifications-api y la red aportaron unos 7 ms.
+- No hubo reintento porque `createNotification` solo reintenta ante 503 cuando quedan intentos; un 504 es fallo final.
+- Esta operación es una de las que forman el ~25 % de 5xx de la fase C.
+
+**Hipótesis** (requeriría evidencia adicional):
+- Que el timeout se deba a saturación o lentitud del proveedor externo real. La telemetría solo muestra el resultado y la duración, no la causa interna (en este laboratorio lo provoca `X-Lab-Scenario`, que no se registra porque es infraestructura del experimento).
+- Que un reintento ante 504 habría evitado el fallo: no hay evidencia de que un segundo intento hubiera tenido éxito.
 
 ## 8. Límites de la evidencia
 
