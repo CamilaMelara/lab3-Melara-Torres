@@ -1,0 +1,72 @@
+services:
+  notifications-api:
+    build:
+      context: .
+      dockerfile: services/notifications-api/Dockerfile
+    environment:
+      PORT: "3000"
+      DELIVERY_PROVIDER_URL: "http://delivery-provider:3000"
+      LOG_FILE: "/logs/notifications-api.jsonl"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      delivery-provider:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  delivery-provider:
+    build:
+      context: .
+      dockerfile: services/delivery-provider/Dockerfile
+    environment:
+      PORT: "3000"
+      LOG_FILE: "/logs/delivery-provider.jsonl"
+    ports:
+      - "3002:3000"
+    volumes:
+      - ./logs:/logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      notifications-api:
+        condition: service_healthy
+      delivery-provider:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:

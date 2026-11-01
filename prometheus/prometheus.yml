@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: notifications-api
+    static_configs:
+      - targets: ["notifications-api:3000"]
+
+  - job_name: delivery-provider
+    static_configs:
+      - targets: ["delivery-provider:3000"]

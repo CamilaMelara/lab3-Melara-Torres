@@ -1,0 +1,54 @@
+name: Baseline smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Reset logs
+        run: npm run reset
+
+      - name: Start environment
+        run: docker compose up --build -d
+
+      - name: Wait for services
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:3000/health >/dev/null \
+              && curl -fsS http://localhost:3002/health >/dev/null \
+              && curl -fsS http://localhost:9090/-/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          exit 1
+
+      - name: Exercise functional path
+        env:
+          LAB_SCENARIO_SCALE: "0.02"
+        run: npm run scenario
+
+      - name: Stop environment
+        if: always()
+        run: docker compose down -v
