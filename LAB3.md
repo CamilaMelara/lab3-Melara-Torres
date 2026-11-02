@@ -24,7 +24,7 @@ Documente los eventos estructurados diseñados para cada servicio. Para cada cat
 | notifications-api | `notification.received` | INFO | request_id, notification_id, channel, template | Marca el inicio de una operación válida y permite saber qué entidad y tipo de notificación se procesó. |
 | notifications-api | `notification.rejected` | WARN | request_id, reason | La solicitud inválida del cliente, no se registran los valores recibidos. |
 | notifications-api | `delivery.attempt.started` | INFO | request_id, notification_id, channel, attempt, dependency | Indica cuándo se invoca al proveedor y en qué intento permite medir el tiempo entre intentos. |
-| notifications-api | `delivery.attempt.retryable_failure` | WARN | request_id, notification_id, attempt, dependency, dependency_status, result, will_retry | Condición rara pero recuperable: la operación todavía puede terminar bien. |
+| notifications-api | `delivery.attempt.retryable_failure` | WARN | request_id, notification_id, attempt, dependency, dependency_status, result, will_retry | es una condición rara pero recuperable: la operación todavía puede terminar bien. |
 | notifications-api | `notification.delivered` | INFO | request_id, notification_id, channel, attempt, status_code, result, duration_ms, dependency_duration_ms | Resultado final exitoso con duración total y en la dependencia. |
 | notifications-api | `notification.failed` | ERROR | request_id, notification_id, channel, attempt, dependency_status, status_code, result, duration_ms | Es el fallo que determina el resultado final (timeout o error del proveedor). |
 | notifications-api | `notification.unexpected_error` | ERROR | request_id, notification_id, dependency, status_code, error.type, error.message | Excepción no prevista (p. ej. proveedor inalcanzable); solo tipo y mensaje del error. |
@@ -90,12 +90,12 @@ jq -c 'select(.request_id == "req-retry-01") | {time, level, event, attempt, sta
 1. **Qué recibió notifications-api:** una solicitud válida para `not-retry-01` (t = 0).
 2. **Cuándo invocó al proveedor:** inmediatamente (t = 0) y de nuevo en t = 138 ms.
 3. **Qué ocurrió en el primer intento:** el delivery-provider respondió 503 (`retryable_error`) a los ~83 ms.
-4. **Por qué hubo un segundo intento:** el 503 es un error recuperable y la operación tenía un intento restante; notifications-api esperó ~50 ms y reintentó.
+4. **Por qué hubo un segundo intento:** porque el 503 es un error recuperable y la operación tenía un intento restante, notifications-api esperó ~50 ms y reintentó.
 5. **Resultado final:** el segundo intento fue aceptado (202) y la notificación se entregó en ~229 ms en total.
 
 La correlación es posible porque ambos servicios registran el mismo `request_id` (`req-retry-01`), propagado mediante `X-Request-ID`; el proveedor no generó un identificador propio.
 
-**Justificación de los niveles:** el 503 del primer intento se registró como **WARN** en ambos servicios porque es una condición anómala de la que la operación todavía podía recuperarse, y efectivamente se recuperó. Registrarlo como ERROR haría que una búsqueda de errores mostrara como fallida una operación que terminó con éxito. El resultado final se registró como **INFO** (`notification.delivered`). **ERROR** se reserva para los fallos que determinan el resultado final, como `notification.failed` o `delivery.timeout`, que aparecen en la fase C del escenario.
+**Justificación de los niveles:** el 503 del primer intento se registró como **WARN** en ambos servicios porque es una condición un poco rara de la que la operación que todavía podía recuperarse, y efectivamente se recuperó. Al registrarlo como ERROR haría que una búsqueda de errores mostrara como fallida una operación que terminó con éxito. El resultado final se registró como **INFO** (`notification.delivered`). **ERROR** se reserva para los fallos que determinan el resultado final, como `notification.failed` o `delivery.timeout`, que aparecen en la fase C del escenario.
 
 ### 2.3 Minimización de información
 
@@ -130,7 +130,7 @@ Documente las familias implementadas.
 
 Explique por qué `request_id` y `notification_id` no se utilizaron como labels.
 
-**Por qué `request_id` y `notification_id` no son labels:** en los logs son valiosos porque identifican una operación concreta y permiten correlacionar eventos. En Prometheus, cada combinación distinta de labels crea una serie temporal nueva; como estos valores cambian en cada solicitud, se crearía una serie por operación (cardinalidad no acotada), con consumo de memoria creciente y sin beneficio, porque una serie con un único evento no permite calcular tasas ni distribuciones útiles.
+**Por qué `request_id` y `notification_id` no son labels:** en los logs son bien importantes porque identifican una operación concreta y permiten correlacionar eventos. En Prometheus, cada combinación distinta de labels crea una serie temporal nueva al final como estos valores cambian en cada solicitud, se crearía una serie por operación (cardinalidad no acotada), con consumo de memoria creciente y sin beneficio, porque una serie con un único evento no permite calcular tasas ni distribuciones útiles.
 
 Para los Histograms, indique los buckets seleccionados y justifique su relación con los comportamientos temporales del escenario.
 
@@ -145,9 +145,9 @@ Para los Histograms, indique los buckets seleccionados y justifique su relación
 | # | Pregunta | Expresión | Magnitud | Unidad |
 |---|---|---|---|---|
 | 1 | Tasa de solicitudes | `sum(rate(notifications_http_requests_total{route="/notifications"}[1m]))` | Las solicitudes a `POST /notifications` por segundo, promediadas en el último minuto. Se usa `rate()` porque el Counter es acumulado. | req/s |
-| 2 | Proporción de 5xx | `sum(rate(notifications_http_requests_total{route="/notifications",status_code=~"5.."}[1m])) / sum(rate(notifications_http_requests_total{route="/notifications"}[1m]))` | Fracción de las respuestas del último minuto con código 5xx (502 o 504). Sin tráfico la división es 0/0 y no devuelve resultado; sin respuestas 5xx el numerador no existe y tampoco devuelve serie. | proporción (0–1) |
+| 2 | Proporción de 5xx | `sum(rate(notifications_http_requests_total{route="/notifications",status_code=~"5.."}[1m])) / sum(rate(notifications_http_requests_total{route="/notifications"}[1m]))` | La fracción de las respuestas del último minuto con código 5xx (502 o 504). Sin tráfico la división es 0/0 y no devuelve resultado; sin respuestas 5xx el numerador no existe y tampoco devuelve serie. | proporción (0–1) |
 | 3 | Duración media | `sum(rate(notifications_http_request_duration_seconds_sum{route="/notifications"}[1m])) / sum(rate(notifications_http_request_duration_seconds_count{route="/notifications"}[1m]))` | Son los segundos acumulados por segundo divididos entre solicitudes por segundo: tiempo medio por solicitud en el último minuto. | s |
-| 4 | p95 de duración | `histogram_quantile(0.95, sum by (le) (rate(notifications_http_request_duration_seconds_bucket{route="/notifications"}[1m])))` | Es la estimación del percentil 95 de la duración, interpolada entre los bordes de bucket. Se conserva `le` en la agregación. | s |
+| 4 | p95 de duración | `histogram_quantile(0.95, sum by (le) (rate(notifications_http_request_duration_seconds_bucket{route="/notifications"}[1m])))` | Es la estimación del percentil 95 de la duración, que es interpolada entre los bordes de bucket. Se conserva `le` en la agregación. | s |
 | 5 | Resultados del proveedor | `sum by (result) (rate(delivery_requests_total[1m]))` | Operaciones por segundo de delivery-provider, una serie por resultado (`success`, `timeout`, `retryable_error`). | ops/s |
 | 6 | p95 del proveedor | `histogram_quantile(0.95, sum by (le) (rate(delivery_request_duration_seconds_bucket[1m])))` |  Es la estimación del percentil 95 de la duración de cada operación del proveedor. Coherente con el sufijo `_seconds` de la métrica. | s |
 
@@ -222,7 +222,7 @@ Escenario ejecutado el 2026-11-01 entre 00:07:36 y 00:13:36 (hora local, UTC-6).
 - La regla de alerta pasó a Alerting durante esta fase (`evidence/alert.png`).
 - Logs: 90 eventos `notification.failed` con `status_code` 504 y `result` `timeout`, y 90 eventos `delivery.timeout` en el proveedor.
 
-**Interpretación.** Es una degradación de **disponibilidad** originada en la dependencia: aproximadamente 1 de cada 4 solicitudes termina en 504 porque delivery-provider agota su tiempo (~700 ms). La actividad no cambió, así que la degradación no se explica por más carga. El p95 sube mucho más que la media porque el 25 % de solicitudes lentas basta para que el percentil 95 caiga dentro de ellas, mientras que la media combina 75 % de solicitudes de ~80 ms con 25 % de ~700 ms (≈ 0.75 × 0.08 + 0.25 × 0.71 ≈ 0.24 s).
+**Interpretación.** Es una degradación de **disponibilidad** originada en la dependencia: aprox 1 de cada 4 solicitudes termina en 504 porque delivery-provider agota su tiempo (~700 ms). La actividad no cambió, así que la degradación no se explica por más carga. El p95 sube mucho más que la media porque el 25 % de solicitudes lentas basta para que el percentil 95 caiga dentro de ellas, mientras que la media combina 75 % de solicitudes de ~80 ms con 25 % de ~700 ms (≈ 0.75 × 0.08 + 0.25 × 0.71 ≈ 0.24 s).
 
 ### 6.3 Fase D
 
@@ -301,7 +301,7 @@ jq -c --arg r "$RID" 'select(.request_id == $r) | {time, level, event, attempt, 
 - En el mismo intervalo, el dashboard muestra la proporción de 5xx por encima de 0 y la serie `timeout` de delivery-provider, y la alerta pasó a Alerting.
 
 **Interpretación** (significado según el conocimiento del sistema):
-- La solicitud falló porque la dependencia agotó su tiempo; el 504 del cliente es la propagación del 504 del proveedor.
+- La solicitud falló porque la dependencia agotó su tiempo, el 504 del cliente es la propagación del 504 del proveedor.
 - Casi toda la duración (704 de 711 ms) ocurrió dentro de delivery-provider; el procesamiento propio de notifications-api y la red aportaron unos 7 ms.
 - No hubo reintento porque `createNotification` solo reintenta ante 503 cuando quedan intentos; un 504 es fallo final.
 - Esta operación es una de las que forman el ~25 % de 5xx de la fase C.
