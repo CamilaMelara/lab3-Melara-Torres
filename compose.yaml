@@ -7,6 +7,9 @@ services:
       PORT: "3000"
       DELIVERY_PROVIDER_URL: "http://delivery-provider:3000"
       LOG_FILE: "/logs/notifications-api.jsonl"
+      OTEL_SERVICE_NAME: "notifications-api"
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector:4318/v1/traces"
+      OTEL_TRACES_SAMPLER: "always_on"
     ports:
       - "3000:3000"
     volumes:
@@ -14,6 +17,8 @@ services:
     depends_on:
       delivery-provider:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 5s
@@ -27,10 +32,16 @@ services:
     environment:
       PORT: "3000"
       LOG_FILE: "/logs/delivery-provider.jsonl"
+      OTEL_SERVICE_NAME: "delivery-provider"
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector:4318/v1/traces"
+      OTEL_TRACES_SAMPLER: "always_on"
     ports:
       - "3002:3000"
     volumes:
       - ./logs:/logs
+    depends_on:
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 5s
@@ -66,6 +77,20 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.22.0
+    ports:
+      - "16686:16686"
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.164.0
+    command:
+      - "--config=/etc/otelcol/config.yaml"
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - jaeger
 
 volumes:
   prometheus-data:
